@@ -1,0 +1,23 @@
+# ── Contenu interne — NE JAMAIS pousser sur ce repo PUBLIC ──
+# Dumps de pages SharePoint intranet (contenu interne, URLs tenant, noms)
+tests/*.html
+# Baseline locale (titres de pages intranet)
+tests/expected.json
+# Doc projet interne
+CLAUDE.md
+
+# ── Config & état locaux (par machine) ──
+update-config.json
+ai-config.json
+release-config.local
+launcher.log
+.backup/
+.claude/
+
+# ── Artefacts ──
+*.zip
+.DS_Store
+node_modules/
+
+# ── Backups locaux ──
+*.BACKUP*.html

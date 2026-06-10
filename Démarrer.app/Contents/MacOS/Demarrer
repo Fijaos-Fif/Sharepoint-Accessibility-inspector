@@ -1,0 +1,69 @@
+#!/bin/bash
+# Démarrer.app/Contents/MacOS/Demarrer
+# Lance launcher.py qui va check les MAJ + démarrer start.py.
+# Le .app n'ouvre PAS de fenêtre Terminal (launched via LaunchServices).
+
+# Localise le dossier de l'outil (parent du .app)
+APP_BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
+TOOL_DIR="$(dirname "$APP_BUNDLE")"
+cd "$TOOL_DIR" || exit 1
+
+# Log de démarrage : utile car en mode .app il n'y a pas de terminal pour voir les erreurs
+LOG="$TOOL_DIR/launcher.log"
+{
+    echo ""
+    echo "==== $(date '+%Y-%m-%d %H:%M:%S') ===="
+    echo "APP_BUNDLE=$APP_BUNDLE"
+    echo "TOOL_DIR=$TOOL_DIR"
+    echo "PWD=$(pwd)"
+} >> "$LOG" 2>&1
+
+# Cherche un Python disponible (PATH peut être minimal en mode .app launch via LaunchServices)
+PYTHON=""
+for candidate in python3 /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        PYTHON="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    echo "Python introuvable" >> "$LOG"
+    osascript -e 'display dialog "Python n'\''est pas installé sur ce Mac.
+
+Pour l'\''installer :
+1. Ouvrez le centre logiciel de votre organisation (ou python.org)
+2. Cherchez « Python »
+3. Cliquez « Installer »
+4. Une fois fini, double-cliquez à nouveau sur Démarrer.app" with title "Audit Accessibilité" buttons {"OK"} default button "OK" with icon stop'
+    exit 1
+fi
+
+echo "PYTHON=$PYTHON ($($PYTHON --version 2>&1))" >> "$LOG"
+
+# Vérifie launcher.py et start.py
+if [ ! -f "launcher.py" ] || [ ! -f "start.py" ]; then
+    echo "launcher.py ou start.py manquant dans $TOOL_DIR" >> "$LOG"
+    osascript -e 'display dialog "Fichiers manquants : launcher.py ou start.py.
+
+Le Démarrer.app doit être placé dans le même dossier que les autres fichiers de l'\''outil (audit-accessibilite-sharepoint.html, start.py, launcher.py)." with title "Audit Accessibilité" buttons {"OK"} default button "OK" with icon stop'
+    exit 1
+fi
+
+echo "Lancement de launcher.py…" >> "$LOG"
+# Lance launcher.py, redirige stdout+stderr dans le log
+"$PYTHON" launcher.py >> "$LOG" 2>&1
+RC=$?
+echo "launcher.py exit code: $RC" >> "$LOG"
+
+# Si le launcher a planté, on affiche un dialog (sinon l'agent reste dans le silence)
+if [ $RC -ne 0 ]; then
+    TAIL=$(tail -c 600 "$LOG" | tr '"' "'" | tr '\n' ' ')
+    osascript -e "display dialog \"Le lanceur a planté (code $RC).
+
+Vérifiez launcher.log pour les détails.
+
+Dernier extrait :
+$TAIL\" with title \"Audit Accessibilité\" buttons {\"OK\"} default button \"OK\" with icon stop"
+fi
+exit $RC
