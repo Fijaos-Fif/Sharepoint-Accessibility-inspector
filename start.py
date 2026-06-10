@@ -780,12 +780,41 @@ def main():
                 pass
             super().server_bind()
 
-    try:
-        # Bind sur ::1 (loopback IPv6) avec dual-stack pour accepter aussi 127.0.0.1
-        server = LocalDualStackServer(("::1", PORT), AuditHandler)
-    except OSError:
-        # Fallback IPv4 pur si IPv6 indisponible
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), AuditHandler)
+    # Cas du redémarrage post-installation : l'ancien process peut tenir encore le port
+    # quelques instants. On attend qu'il l'ait VRAIMENT libéré avant de binder — sinon les
+    # deux processes se partagent un socket bancal et le nouveau reset toutes les connexions.
+    def _port_busy():
+        for host in ("::1", "127.0.0.1"):
+            try:
+                with socket.create_connection((host, PORT), timeout=0.4):
+                    return True
+            except OSError:
+                pass
+        return False
+
+    waited = 0.0
+    while _port_busy() and waited < 12.0:
+        _time.sleep(0.3)
+        waited += 0.3
+
+    # Bind avec quelques tentatives (le prédécesseur peut finir de libérer le port à l'instant).
+    server = None
+    for attempt in range(20):  # ~6s max
+        try:
+            # Bind sur ::1 (loopback IPv6) avec dual-stack pour accepter aussi 127.0.0.1
+            server = LocalDualStackServer(("::1", PORT), AuditHandler)
+            break
+        except OSError:
+            try:
+                # Fallback IPv4 pur si IPv6 indisponible
+                server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), AuditHandler)
+                break
+            except OSError:
+                _time.sleep(0.3)
+    if server is None:
+        print(f"\n  {R}✗{D}  Le port {PORT} reste occupé. Fermez l'autre fenêtre de l'outil puis relancez.\n")
+        sys.exit(1)
+
     try:
         with server:
             server.serve_forever()
