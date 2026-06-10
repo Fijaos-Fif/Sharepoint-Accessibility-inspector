@@ -53,7 +53,26 @@ rm -rf "$PACK" && mkdir -p "$PACK"
 cp "$HTML" audit-injector-ui.js start.py launcher.py "Démarrer (Mac).command" "Démarrer (Windows).bat" Démarrer.vbs UPDATES-SETUP.md "$PACK/"
 cp -R Démarrer.app "$PACK/"
 chmod +x "$PACK/Démarrer (Mac).command" "$PACK/Démarrer.app/Contents/MacOS/Demarrer"
-(cd /tmp && rm -f "$ZIP_NAME" && zip -r -q "$ZIP_NAME" "$(basename "$PACK")" -x "*.DS_Store")
+# Archive construite en Python : pose le flag UTF-8 sur les noms accentués (Démarrer.*),
+# sinon le module zipfile de launcher.py les décode en cp437 à l'extraction (→ « D├⌐marrer »).
+rm -f "/tmp/$ZIP_NAME"
+python3 - "$PACK" "/tmp/$ZIP_NAME" <<'PYZIP'
+import os, sys, stat, zipfile
+pack, out = sys.argv[1], sys.argv[2]
+root = os.path.dirname(pack)
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+    for dirpath, dirs, files in os.walk(pack):
+        for name in files:
+            if name == ".DS_Store":
+                continue
+            full = os.path.join(dirpath, name)
+            arc = os.path.relpath(full, root)
+            zi = zipfile.ZipInfo(arc)
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = (os.stat(full).st_mode & 0o7777) << 16  # préserve +x
+            with open(full, "rb") as f:
+                zf.writestr(zi, f.read())
+PYZIP
 echo "  $(du -h "/tmp/$ZIP_NAME" | cut -f1) — /tmp/$ZIP_NAME"
 
 if [[ "${*: -1}" == "--dry-run" ]]; then

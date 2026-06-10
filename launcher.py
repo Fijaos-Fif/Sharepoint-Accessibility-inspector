@@ -17,10 +17,12 @@ import http.client
 import io
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import zipfile
@@ -240,27 +242,6 @@ def show_update_dialog(info):
     return result["install"]
 
 
-def show_progress_window(message):
-    """Petite fenêtre de progression. Retourne (root, update_fn, close_fn)."""
-    import tkinter as tk
-    root = tk.Tk()
-    root.title("Audit Accessibilité")
-    root.geometry("420x110")
-    root.resizable(False, False)
-    frame = tk.Frame(root, padx=22, pady=22)
-    frame.pack(fill="both", expand=True)
-    label = tk.Label(frame, text=message, font=("Helvetica", 11))
-    label.pack(anchor="w")
-    # Barre de progression indéterminée (juste un petit spinner texte)
-    sub = tk.Label(frame, text="Veuillez patienter…", font=("Helvetica", 10), fg="#666")
-    sub.pack(anchor="w", pady=(8, 0))
-    root.update_idletasks()
-    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    root.geometry(f"+{(sw-420)//2}+{(sh-110)//3}")
-    root.update()
-    return root, label, lambda: root.destroy()
-
-
 def show_error(msg):
     """Dialog d'erreur native."""
     try:
@@ -287,54 +268,57 @@ def show_info(msg):
 
 
 # ─── Installation de la maj ───────────────────────────────────────────────
-def install_update(info):
-    """Télécharge le ZIP, backup ancien, extrait, restaure si fail."""
-    progress = None
+def _do_install(info, status):
+    """Travail bloquant (download/backup/extract/rollback). AUCUN appel Tk ici —
+    tourne dans un thread de fond. `status(msg)` poste un libellé vers l'UI.
+    Lève en cas d'échec (après rollback)."""
+    status(f"Téléchargement de la v{info['remote']}…")
+    log(f"downloading {info['downloadUrl']}")
+    zip_bytes = http_get(info["downloadUrl"], INSTALL_TIMEOUT_S)
+    log(f"downloaded {len(zip_bytes)} bytes")
+
+    status("Vérification du ZIP…")
+    zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    names = [n for n in zf.namelist() if not n.endswith("/")]
+    if not any(n.endswith("audit-accessibilite-sharepoint.html") for n in names):
+        raise RuntimeError("Le ZIP ne contient pas l'outil attendu")
+    if not any(n.endswith("start.py") for n in names):
+        raise RuntimeError("Le ZIP ne contient pas start.py")
+
+    import posixpath
     try:
-        progress, label, close_progress = show_progress_window(
-            f"Téléchargement de la v{info['remote']}…")
-        log(f"downloading {info['downloadUrl']}")
-        zip_bytes = http_get(info["downloadUrl"], INSTALL_TIMEOUT_S)
-        log(f"downloaded {len(zip_bytes)} bytes")
-        label.config(text="Vérification du ZIP…")
-        progress.update()
+        common = posixpath.commonpath(names)
+    except Exception:
+        common = ""
+    prefix = (common + "/") if common and not common.endswith("/") else common
 
-        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
-        names = [n for n in zf.namelist() if not n.endswith("/")]
-        if not any(n.endswith("audit-accessibilite-sharepoint.html") for n in names):
-            raise RuntimeError("Le ZIP ne contient pas l'outil attendu")
-        if not any(n.endswith("start.py") for n in names):
-            raise RuntimeError("Le ZIP ne contient pas start.py")
-
-        import posixpath
-        try:
-            common = posixpath.commonpath(names)
-        except Exception:
-            common = ""
-        prefix = (common + "/") if common and not common.endswith("/") else common
-
-        # Backup
-        label.config(text="Sauvegarde de la version actuelle…")
-        progress.update()
-        backup = SCRIPT_DIR / ".backup"
+    backup = SCRIPT_DIR / ".backup"
+    try:
+        status("Sauvegarde de la version actuelle…")
         if backup.exists():
             shutil.rmtree(backup)
         backup.mkdir()
         for f in SCRIPT_DIR.iterdir():
-            if f.name in (".backup", ".update-cache", "tests", "update-config.json", "launcher.log"):
+            if f.name in (".backup", ".update-cache", "tests", "update-config.json",
+                          "ai-config.json", "release-config.local", "launcher.log"):
                 continue
             if f.is_file():
                 shutil.copy2(f, backup / f.name)
             elif f.is_dir() and f.name == "Démarrer.app":
                 shutil.copytree(f, backup / f.name)
 
-        # Extract
-        label.config(text="Installation des nouveaux fichiers…")
-        progress.update()
+        status("Installation des nouveaux fichiers…")
         for member in zf.infolist():
             fn = member.filename
             if not fn or fn.endswith("/"):
                 continue
+            # ZIP sans flag UTF-8 (ex. créé par l'ancien `zip` CLI) : Python a décodé les
+            # noms accentués en cp437 → on les remet en UTF-8 (sinon « Démarrer » → « D├⌐marrer »).
+            if not (member.flag_bits & 0x800):
+                try:
+                    fn = fn.encode("cp437").decode("utf-8")
+                except (UnicodeEncodeError, UnicodeDecodeError):
+                    pass
             rel = fn[len(prefix):] if prefix and fn.startswith(prefix) else fn
             if not rel:
                 continue
@@ -354,38 +338,98 @@ def install_update(info):
                 except Exception:
                     pass
         zf.close()
-
-        close_progress()
         log(f"install OK: v{info['remote']}")
-        show_info(f"Mise à jour v{info['remote']} installée avec succès.\n\nL'outil va démarrer dans la nouvelle version.")
-        return True
-
-    except Exception as e:
-        log(f"install failed: {e}\n{traceback.format_exc()}")
-        try:
-            close_progress()
-        except Exception:
-            pass
-        # Rollback
-        backup = SCRIPT_DIR / ".backup"
+    except Exception:
+        # Rollback depuis le backup (pure FS, pas de Tk)
         if backup.exists():
             log("rolling back from backup")
-            try:
-                for f in backup.iterdir():
-                    target = SCRIPT_DIR / f.name
-                    if f.is_file():
-                        shutil.copy2(f, target)
-                    elif f.is_dir():
-                        if target.exists():
-                            shutil.rmtree(target)
-                        shutil.copytree(f, target)
-                show_error(f"Échec de l'installation : {e}\n\nL'ancienne version a été restaurée.")
-            except Exception as re:
-                log(f"rollback failed: {re}")
-                show_error(f"Échec de l'installation ET de la restauration : {e} / {re}\n\nRéinstallez l'outil manuellement.")
+            for f in backup.iterdir():
+                target = SCRIPT_DIR / f.name
+                if f.is_file():
+                    shutil.copy2(f, target)
+                elif f.is_dir():
+                    if target.exists():
+                        shutil.rmtree(target)
+                    shutil.copytree(f, target)
+        raise
+
+
+def install_update(info):
+    """Télécharge + installe la MAJ. La fenêtre de progression tourne sur le thread
+    principal (mainloop), le travail bloquant dans un thread de fond — sinon, sur macOS,
+    la fenêtre s'affiche vide (le contenu n'est jamais peint pendant le blocage)."""
+    q = queue.Queue()
+    state = {"error": None, "done": False, "rolled_back": False}
+
+    def worker():
+        try:
+            _do_install(info, lambda m: q.put(("status", m)))
+        except Exception as e:
+            state["error"] = e
+            state["rolled_back"] = (SCRIPT_DIR / ".backup").exists()
+            log(f"install failed: {e}\n{traceback.format_exc()}")
+        finally:
+            state["done"] = True
+            q.put(("done", None))
+
+    try:
+        import tkinter as tk
+    except ImportError:
+        # Pas de Tk : on installe quand même, sans UI
+        log("Tkinter indisponible, install sans fenêtre de progression")
+        worker()
+        if state["error"]:
+            return False
+        return True
+
+    root = tk.Tk()
+    root.title("Audit Accessibilité")
+    root.geometry("440x130")
+    root.resizable(False, False)
+    root.configure(bg="#FFFFFF")
+    frame = tk.Frame(root, padx=24, pady=24, bg="#FFFFFF")
+    frame.pack(fill="both", expand=True)
+    label = tk.Label(frame, text=f"Téléchargement de la v{info['remote']}…",
+                     font=("Helvetica", 12), bg="#FFFFFF", fg="#1F1E1B", anchor="w", justify="left")
+    label.pack(anchor="w", fill="x")
+    sub = tk.Label(frame, text="Veuillez patienter…", font=("Helvetica", 10),
+                   bg="#FFFFFF", fg="#666666", anchor="w")
+    sub.pack(anchor="w", pady=(10, 0))
+
+    root.update_idletasks()
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    root.geometry(f"+{(sw-440)//2}+{(sh-130)//3}")
+    root.lift()
+    root.attributes("-topmost", True)
+    root.after(150, lambda: root.attributes("-topmost", False))
+
+    def poll():
+        try:
+            while True:
+                kind, payload = q.get_nowait()
+                if kind == "status":
+                    label.config(text=payload)
+                elif kind == "done":
+                    root.destroy()
+                    return
+        except queue.Empty:
+            pass
+        root.after(80, poll)
+
+    threading.Thread(target=worker, daemon=True).start()
+    root.after(80, poll)
+    root.mainloop()
+
+    # Fenêtre fermée → on affiche le verdict final (sur le thread principal)
+    if state["error"]:
+        e = state["error"]
+        if state["rolled_back"]:
+            show_error(f"Échec de l'installation : {e}\n\nL'ancienne version a été restaurée.")
         else:
             show_error(f"Échec de l'installation : {e}\n\nL'ancienne version est conservée.")
         return False
+    show_info(f"Mise à jour v{info['remote']} installée avec succès.\n\nL'outil va démarrer dans la nouvelle version.")
+    return True
 
 
 # ─── Lance start.py ───────────────────────────────────────────────────────
