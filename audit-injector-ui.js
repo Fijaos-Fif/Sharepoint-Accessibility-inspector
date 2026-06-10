@@ -1777,36 +1777,68 @@
     setTimeout(() => { t.style.opacity = '0'; }, 5000);
     setTimeout(() => { t.remove(); }, 5400);
   }
-  // Renvoie {local, latest} ou null si indisponible
+  // Renvoie {local, latest, downloadUrl} ou null si indisponible
   async function fetchUpdateInfo() {
     let local = null;
     try { const r = await fetch(SERVER + '/api/version', {cache:'no-store'}); if (r.ok) local = (await r.json()).version; } catch(_) {}
     let data = null;
     try { const r = await fetch(SERVER + '/api/check-update?url=' + encodeURIComponent(UPDATE_API), {cache:'no-store'}); if (r.ok) data = await r.json(); } catch(_) {}
     if (!data) { try { const r = await fetch(UPDATE_API, {cache:'no-store'}); if (r.ok) data = await r.json(); } catch(_) {} }
-    if (data && data.tag_name) data = { version: String(data.tag_name).replace(/^v/, '') };
-    if (!local || !data || !data.version) return null;
-    return { local, latest: data.version };
+    if (!local || !data || !data.tag_name) return null;
+    const zip = (data.assets || []).find(a => /\.zip$/i.test(a.name || ''));
+    return { local, latest: String(data.tag_name).replace(/^v/, ''), downloadUrl: zip ? zip.browser_download_url : '' };
+  }
+  // Attend que le serveur local soit revenu sur la version cible après redémarrage
+  async function pollVersion(target, maxAttempts) {
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try { const r = await fetch(SERVER + '/api/version', {cache:'no-store'}); if (r.ok) { const d = await r.json(); if (d && d.version === target) return true; } } catch(_) {}
+    }
+    return false;
+  }
+  // Installe directement (même comportement que la page localhost) : POST /api/install-update
+  // → start.py télécharge le ZIP, l'extrait par-dessus, et redémarre. La page SP reste ouverte.
+  let pendingUpdate = null;
+  async function installFromPanel(info) {
+    const btn = shadow.querySelector('#checkUpdate');
+    if (!info.downloadUrl) { showToast('⚠ Aucun fichier d\'installation trouvé pour la v' + info.latest + '.', 'warn'); return; }
+    btn.disabled = true; btn.textContent = '⏳ Installation de la v' + info.latest + '…';
+    try {
+      // Si le serveur redémarre avant de répondre, le fetch peut échouer : l'extraction a
+      // déjà eu lieu côté serveur, on enchaîne donc sur le poll de version dans tous les cas.
+      await fetch(SERVER + '/api/install-update', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ downloadUrl: info.downloadUrl, toVersion: info.latest })
+      }).catch(() => {});
+    } catch(_) {}
+    showToast('⏳ Installation en cours, l\'outil redémarre…', 'update');
+    const ok = await pollVersion(info.latest, 40);
+    btn.disabled = false;
+    btn.classList.remove('has-update');
+    btn.textContent = '🔄 Vérifier les mises à jour';
+    pendingUpdate = null;
+    if (ok) showToast('✓ Mise à jour v' + info.latest + ' installée. Vos prochains audits utilisent la nouvelle version.', 'ok');
+    else showToast('La mise à jour a été lancée. Si l\'outil ne répond plus, relancez « Démarrer ».', 'warn');
   }
   shadow.querySelector('#checkUpdate').onclick = async () => {
     const btn = shadow.querySelector('#checkUpdate');
+    // MAJ déjà détectée par l'auto-check → installation directe en un clic
+    if (pendingUpdate) { installFromPanel(pendingUpdate); return; }
     const orig = btn.textContent;
     btn.disabled = true; btn.textContent = '⏳ Vérification…';
     const info = await fetchUpdateInfo();
     btn.disabled = false; btn.textContent = orig;
-    if (!info) { showToast('⚠ Impossible de vérifier les mises à jour. Vérifiez que l\'outil est bien démarré (fenêtre « Démarrer ») et réessayez.', 'warn'); return; }
-    if (cmpVer(info.latest, info.local) > 0) {
-      showToast('🚀 Mise à jour disponible : v' + info.latest + ' (vous avez v' + info.local + '). Pour l\'installer : fermez l\'outil et relancez « Démarrer » — l\'installation est proposée au démarrage.', 'update');
-    } else {
-      showToast('✓ Vous êtes à jour (v' + info.local + ').', 'ok');
-    }
+    if (!info) { showToast('⚠ Impossible de vérifier les mises à jour. Vérifiez que l\'outil est bien démarré (fenêtre « Démarrer »).', 'warn'); return; }
+    if (cmpVer(info.latest, info.local) > 0) installFromPanel(info);
+    else showToast('✓ Vous êtes à jour (v' + info.local + ').', 'ok');
   };
-  // Auto-check discret au chargement : surligne le bouton si une MAJ existe (best-effort, silencieux)
+  // Auto-check discret au chargement : si une MAJ existe, le bouton devient « Installer »
   fetchUpdateInfo().then(info => {
     if (info && cmpVer(info.latest, info.local) > 0) {
+      pendingUpdate = info;
       const btn = shadow.querySelector('#checkUpdate');
       btn.classList.add('has-update');
-      btn.textContent = '🚀 Mise à jour disponible (v' + info.latest + ')';
+      btn.textContent = '🚀 Installer la mise à jour (v' + info.latest + ')';
     }
   }).catch(() => {});
 

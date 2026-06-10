@@ -4,12 +4,13 @@ Le système de MAJ repose entièrement sur **GitHub Releases** : la dernière re
 
 ## Comment ça marche côté utilisateur
 
-1. Au lancement (`Démarrer.app` / `.vbs`), `launcher.py` interroge `https://api.github.com/repos/<owner>/<repo>/releases/latest`
-2. Si `tag_name` > `APP_VERSION` locale → dialog native « Nouvelle version disponible » avec le changelog (= notes de la release)
-3. « Installer » télécharge l'asset `.zip` de la release, backup dans `.backup/`, extrait par-dessus, relance
-4. La page standalone affiche aussi une bannière de MAJ (même API, check au chargement)
+Les mises à jour se font **entièrement depuis le navigateur** (plus de dialog Tkinter au démarrage) :
 
-Les fichiers de config locaux (`ai-config.json`, `update-config.json`, `release-config.local`) ne sont pas dans le ZIP : ils survivent aux mises à jour.
+1. La page localhost **et** le panneau injecté sur SharePoint interrogent `https://api.github.com/repos/<owner>/<repo>/releases/latest` (via le proxy `start.py` pour passer les proxys d'entreprise)
+2. Si `tag_name` > version locale → bannière (page) ou bouton « 🚀 Installer la mise à jour » (panneau)
+3. Un clic → `POST /api/install-update` : `start.py` télécharge l'asset `.zip`, backup dans `.backup/`, extrait par-dessus, et **redémarre** (le nouveau serveur attend que l'ancien ait libéré le port → reprise propre)
+
+`launcher.py` ne sert plus qu'à lancer `start.py`. Les fichiers de config locaux (`ai-config.json`, `update-config.json`, `release-config.local`) ne sont pas dans le ZIP : ils survivent aux mises à jour.
 
 ## Publier une version
 
