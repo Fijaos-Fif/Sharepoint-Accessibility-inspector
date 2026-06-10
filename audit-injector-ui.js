@@ -454,7 +454,7 @@
     }
     .panel.collapsed .panel-head .logo { width: 32px; height: 32px; font-size: 16px; }
     .panel.collapsed .panel-title { display: none; }
-    .panel.collapsed .panel-rerun, .panel.collapsed .panel-dock { display: none; }
+    .panel.collapsed .panel-rerun, .panel.collapsed .panel-dock, .panel.collapsed .panel-pins { display: none; }
     .panel.collapsed .panel-body, .panel.collapsed .panel-tabs,
     .panel.collapsed .panel-score, .panel.collapsed .panel-foot { display: none; }
     .panel-head {
@@ -479,7 +479,7 @@
     .panel-title { flex: 1; }
     .panel-title h2 { font-size: 13px; font-weight: 700; color: var(--fg); margin: 0; }
     .panel-title .meta { font-size: 11px; color: var(--fg-3); margin-top: 2px; }
-    .panel-collapse, .panel-rerun, .panel-dock {
+    .panel-collapse, .panel-rerun, .panel-dock, .panel-pins {
       width: 28px; height: 28px;
       border-radius: 6px;
       color: var(--fg-3);
@@ -487,7 +487,8 @@
       transition: background .12s;
       font-size: 14px;
     }
-    .panel-collapse:hover, .panel-rerun:hover, .panel-dock:hover { background: var(--bg-2); color: var(--fg); }
+    .panel-collapse:hover, .panel-rerun:hover, .panel-dock:hover, .panel-pins:hover { background: var(--bg-2); color: var(--fg); }
+    .panel-pins.off { color: var(--maj); }
     .panel-rerun:disabled { opacity: .5; cursor: wait; }
     .panel-rerun.spinning svg { animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -978,9 +979,41 @@
       padding: 10px 16px;
       border-top: 1px solid var(--border);
       background: var(--bg-2);
-      display: flex; gap: 8px;
+      display: flex; gap: 8px; flex-wrap: wrap;
       flex-shrink: 0;
     }
+    .btn-update {
+      flex-basis: 100%;
+      padding: 8px 12px;
+      background: var(--bg-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12.5px; font-weight: 600;
+      text-align: center;
+      cursor: pointer;
+      transition: background .12s;
+    }
+    .btn-update:hover { background: var(--border); }
+    .btn-update:disabled { opacity: .6; cursor: wait; }
+    .btn-update.has-update {
+      background: var(--blue); color: #fff; border-color: var(--blue);
+    }
+    .btn-update.has-update:hover { filter: brightness(1.08); background: var(--blue); }
+
+    /* Toast (résultat du check MAJ) — dans le shadow, au-dessus du panneau */
+    .a-toast {
+      position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+      z-index: 2147483647; pointer-events: auto;
+      background: #fff; color: #1F1E1B;
+      border-left: 4px solid var(--blue);
+      box-shadow: 0 6px 24px rgba(0,0,0,.22);
+      border-radius: 8px; padding: 12px 16px;
+      font-size: 13px; line-height: 1.5; max-width: 380px;
+      transition: opacity .35s;
+    }
+    .a-toast.ok   { border-left-color: var(--inf); }
+    .a-toast.warn { border-left-color: var(--maj); }
     .btn-full {
       flex: 1;
       padding: 8px 12px;
@@ -1079,6 +1112,7 @@
         <h2>Audit accessibilité</h2>
         <div class="meta"></div>
       </div>
+      <button class="panel-pins" title="Masquer les repères sur la page">👁</button>
       <button class="panel-rerun" title="Relancer l'audit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg></button>
       <button class="panel-dock" title="Basculer mode flottant / fixé">📌</button>
       <button class="panel-collapse" title="Réduire">⇥</button>
@@ -1104,6 +1138,7 @@
     <div class="panel-foot">
       <button class="btn-rescan" id="fullRescan" title="Re-scan complet avec overlay : ouvre toutes les sections, scrolle les WebParts, recharge le contenu lazy. Utile après de gros changements sur la page.">🔍 Re-scan complet</button>
       <button class="btn-full" id="openFull" title="Ouvre la page d'audit standalone dans un nouvel onglet (audit hors-ligne du HTML capturé)">📊 Voir l'audit complet</button>
+      <button class="btn-update" id="checkUpdate" title="Vérifier si une nouvelle version de l'outil est disponible">🔄 Vérifier les mises à jour</button>
     </div>
   `;
 
@@ -1111,6 +1146,7 @@
   let activeId = null; // toutes cartes fermées au départ — l'utilisateur clique pour déplier
   let activeTab = 'issues'; // 'issues' | 'headings'
   let severityFilter = null; // null = tous, sinon 'critical'|'major'|'minor'|'info'
+  let pinsVisible = true; // bouton 👁 du header : masquer/afficher les repères sur la page
   // État IA par issue : {issueId: {loading, options, error}} — utilisé pour le bouton « Suggestions IA »
   const aiByIssue = {};
   // Hiérarchie des titres extraits par runAudit
@@ -1595,6 +1631,8 @@
     // Remove previous
     pinElems.forEach(p => p.remove());
     pinElems = [];
+    // Pins masqués par l'utilisateur (bouton 👁 du header) → on ne dessine rien
+    if (!pinsVisible) return;
     // En mode édition SP, on essaie quand même de dessiner — retagDOMFromIssues a re-attribué
     // les data-audit-id aux éléments matchables (par src image, href lien, texte titre, etc.).
     // Les findings non retrouvés (rare) n'auront juste pas de pin.
@@ -1704,6 +1742,73 @@
   shadow.querySelector('.panel-dock').onclick = () => {
     applyDockMode(dockMode === 'docked' ? 'floating' : 'docked');
   };
+
+  // Bouton 👁 — masque / réaffiche les repères (pins + surlignages) sur la page
+  shadow.querySelector('.panel-pins').onclick = () => {
+    pinsVisible = !pinsVisible;
+    const b = shadow.querySelector('.panel-pins');
+    b.textContent = pinsVisible ? '👁' : '🙈';
+    b.classList.toggle('off', !pinsVisible);
+    b.title = pinsVisible ? 'Masquer les repères sur la page' : 'Afficher les repères sur la page';
+    renderPins();
+  };
+
+  // ─── VÉRIFICATION DES MISES À JOUR (depuis le panneau) ──────────
+  // Le panneau tourne sur sharepoint.com : on passe par le serveur local (localhost est
+  // exempté du blocage mixed-content) qui proxie l'API GitHub Releases et expose la version.
+  const SERVER = 'http://localhost:8080';
+  const UPDATE_API = 'https://api.github.com/repos/Fijaos-Fif/Sharepoint-Accessibility-inspector/releases/latest';
+  function cmpVer(a, b) {
+    const pa = String(a||'0').split('.').map(n => parseInt(n)||0);
+    const pb = String(b||'0').split('.').map(n => parseInt(n)||0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i]||0) - (pb[i]||0);
+      if (d) return d;
+    }
+    return 0;
+  }
+  function showToast(msg, kind) {
+    const old = shadow.querySelector('.a-toast');
+    if (old) old.remove();
+    const t = document.createElement('div');
+    t.className = 'a-toast' + (kind ? ' ' + kind : '');
+    t.textContent = msg;
+    shadow.appendChild(t);
+    setTimeout(() => { t.style.opacity = '0'; }, 5000);
+    setTimeout(() => { t.remove(); }, 5400);
+  }
+  // Renvoie {local, latest} ou null si indisponible
+  async function fetchUpdateInfo() {
+    let local = null;
+    try { const r = await fetch(SERVER + '/api/version', {cache:'no-store'}); if (r.ok) local = (await r.json()).version; } catch(_) {}
+    let data = null;
+    try { const r = await fetch(SERVER + '/api/check-update?url=' + encodeURIComponent(UPDATE_API), {cache:'no-store'}); if (r.ok) data = await r.json(); } catch(_) {}
+    if (!data) { try { const r = await fetch(UPDATE_API, {cache:'no-store'}); if (r.ok) data = await r.json(); } catch(_) {} }
+    if (data && data.tag_name) data = { version: String(data.tag_name).replace(/^v/, '') };
+    if (!local || !data || !data.version) return null;
+    return { local, latest: data.version };
+  }
+  shadow.querySelector('#checkUpdate').onclick = async () => {
+    const btn = shadow.querySelector('#checkUpdate');
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳ Vérification…';
+    const info = await fetchUpdateInfo();
+    btn.disabled = false; btn.textContent = orig;
+    if (!info) { showToast('⚠ Impossible de vérifier les mises à jour. Vérifiez que l\'outil est bien démarré (fenêtre « Démarrer ») et réessayez.', 'warn'); return; }
+    if (cmpVer(info.latest, info.local) > 0) {
+      showToast('🚀 Mise à jour disponible : v' + info.latest + ' (vous avez v' + info.local + '). Pour l\'installer : fermez l\'outil et relancez « Démarrer » — l\'installation est proposée au démarrage.', 'update');
+    } else {
+      showToast('✓ Vous êtes à jour (v' + info.local + ').', 'ok');
+    }
+  };
+  // Auto-check discret au chargement : surligne le bouton si une MAJ existe (best-effort, silencieux)
+  fetchUpdateInfo().then(info => {
+    if (info && cmpVer(info.latest, info.local) > 0) {
+      const btn = shadow.querySelector('#checkUpdate');
+      btn.classList.add('has-update');
+      btn.textContent = '🚀 Mise à jour disponible (v' + info.latest + ')';
+    }
+  }).catch(() => {});
 
   // Relancer l'audit RAPIDE — approche D (mini pre-scan)
   // Ouvre les sections refermées par l'agent depuis le dernier audit, attend 600ms, puis audite.
