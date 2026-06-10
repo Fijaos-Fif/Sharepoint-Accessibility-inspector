@@ -1,0 +1,6 @@
+{
+  "version": "1.6.0",
+  "date": "2026-05-13",
+  "changelog": "- Onglet « Titres » dans le panneau injecté (hiérarchie complète sans ouvrir l'audit standalone)\n- Filtres cliquables par sévérité (critiques / majeurs / mineurs / infos)\n- Ordre DOM : les findings apparaissent dans l'ordre de lecture, pas dans l'ordre des règles\n- Code source toujours visible (placeholder pour les issues de niveau page)\n- Vision IA pour la génération d'alt (l'image est envoyée au modèle)\n- Suggestions IA : libellés contextuels selon le type de finding (alts, libellés de lien, reformulations…)\n- Banderole et règles SP : footer filtré, bannière reconnue comme décorative, info passe du vert au teal\n- Auto-update via fichier audit-version.json hébergé sur SharePoint",
+  "downloadUrl": "https://sncf.sharepoint.com/sites/CHANGE_ME/Documents%20partages/Audit-accessibilite-distribution/audit-accessibilite-sharepoint-v1.6.0.zip"
+}
