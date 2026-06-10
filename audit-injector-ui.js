@@ -982,38 +982,30 @@
       display: flex; gap: 8px; flex-wrap: wrap;
       flex-shrink: 0;
     }
-    .btn-update {
-      flex-basis: 100%;
-      padding: 8px 12px;
-      background: var(--bg-2);
-      color: var(--fg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-size: 12.5px; font-weight: 600;
-      text-align: center;
-      cursor: pointer;
-      transition: background .12s;
+    /* Barre de mise à jour — tout en haut du panneau, au-dessus de l'en-tête */
+    .update-bar {
+      display: none;
+      align-items: center; gap: 10px;
+      padding: 9px 14px;
+      background: linear-gradient(135deg, var(--blue), #6C5CE7);
+      color: #fff;
+      font-size: 12.5px; line-height: 1.4;
+      flex-shrink: 0;
     }
-    .btn-update:hover { background: var(--border); }
-    .btn-update:disabled { opacity: .6; cursor: wait; }
-    .btn-update.has-update {
-      background: var(--blue); color: #fff; border-color: var(--blue);
+    .update-bar .ub-msg { flex: 1; font-weight: 600; }
+    .update-bar .ub-install {
+      background: #fff; color: var(--blue);
+      border-radius: 6px; padding: 5px 12px;
+      font-size: 12.5px; font-weight: 700;
+      cursor: pointer; white-space: nowrap;
     }
-    .btn-update.has-update:hover { filter: brightness(1.08); background: var(--blue); }
-
-    /* Toast (résultat du check MAJ) — dans le shadow, au-dessus du panneau */
-    .a-toast {
-      position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-      z-index: 2147483647; pointer-events: auto;
-      background: #fff; color: #1F1E1B;
-      border-left: 4px solid var(--blue);
-      box-shadow: 0 6px 24px rgba(0,0,0,.22);
-      border-radius: 8px; padding: 12px 16px;
-      font-size: 13px; line-height: 1.5; max-width: 380px;
-      transition: opacity .35s;
+    .update-bar .ub-install:hover { filter: brightness(.96); }
+    .update-bar .ub-install:disabled { opacity: .7; cursor: wait; }
+    .update-bar .ub-close {
+      background: transparent; color: #fff;
+      font-size: 17px; line-height: 1; padding: 0 2px; cursor: pointer;
     }
-    .a-toast.ok   { border-left-color: var(--inf); }
-    .a-toast.warn { border-left-color: var(--maj); }
+    .panel.collapsed .update-bar { display: none !important; }
     .btn-full {
       flex: 1;
       padding: 8px 12px;
@@ -1106,6 +1098,7 @@
 
   // Squelette du panneau — meta/score/body sont remplis par renderHeadScore() et renderBody()
   panel.innerHTML = `
+    <div class="update-bar" id="updateBar"></div>
     <div class="panel-head">
       <div class="logo">♿</div>
       <div class="panel-title">
@@ -1138,7 +1131,6 @@
     <div class="panel-foot">
       <button class="btn-rescan" id="fullRescan" title="Re-scan complet avec overlay : ouvre toutes les sections, scrolle les WebParts, recharge le contenu lazy. Utile après de gros changements sur la page.">🔍 Re-scan complet</button>
       <button class="btn-full" id="openFull" title="Ouvre la page d'audit standalone dans un nouvel onglet (audit hors-ligne du HTML capturé)">📊 Voir l'audit complet</button>
-      <button class="btn-update" id="checkUpdate" title="Vérifier si une nouvelle version de l'outil est disponible">🔄 Vérifier les mises à jour</button>
     </div>
   `;
 
@@ -1767,16 +1759,7 @@
     }
     return 0;
   }
-  function showToast(msg, kind) {
-    const old = shadow.querySelector('.a-toast');
-    if (old) old.remove();
-    const t = document.createElement('div');
-    t.className = 'a-toast' + (kind ? ' ' + kind : '');
-    t.textContent = msg;
-    shadow.appendChild(t);
-    setTimeout(() => { t.style.opacity = '0'; }, 5000);
-    setTimeout(() => { t.remove(); }, 5400);
-  }
+  const updateBar = shadow.querySelector('#updateBar');
   // Renvoie {local, latest, downloadUrl} ou null si indisponible
   async function fetchUpdateInfo() {
     let local = null;
@@ -1796,50 +1779,47 @@
     }
     return false;
   }
+  function setBar(html, withClose) {
+    updateBar.innerHTML = '<span class="ub-msg">' + html + '</span>'
+      + (withClose ? '<button class="ub-close" title="Masquer">×</button>' : '');
+    updateBar.style.display = 'flex';
+    const c = updateBar.querySelector('.ub-close');
+    if (c) c.onclick = () => { updateBar.style.display = 'none'; };
+  }
   // Installe directement (même comportement que la page localhost) : POST /api/install-update
   // → start.py télécharge le ZIP, l'extrait par-dessus, et redémarre. La page SP reste ouverte.
-  let pendingUpdate = null;
   async function installFromPanel(info) {
-    const btn = shadow.querySelector('#checkUpdate');
-    if (!info.downloadUrl) { showToast('⚠ Aucun fichier d\'installation trouvé pour la v' + info.latest + '.', 'warn'); return; }
-    btn.disabled = true; btn.textContent = '⏳ Installation de la v' + info.latest + '…';
-    try {
-      // Si le serveur redémarre avant de répondre, le fetch peut échouer : l'extraction a
-      // déjà eu lieu côté serveur, on enchaîne donc sur le poll de version dans tous les cas.
-      await fetch(SERVER + '/api/install-update', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ downloadUrl: info.downloadUrl, toVersion: info.latest })
-      }).catch(() => {});
-    } catch(_) {}
-    showToast('⏳ Installation en cours, l\'outil redémarre…', 'update');
+    if (!info.downloadUrl) { setBar('⚠ Aucun fichier d\'installation trouvé pour la v' + info.latest + '.', true); return; }
+    setBar('⏳ Installation de la v' + info.latest + '… l\'outil redémarre.');
+    // Si le serveur redémarre avant de répondre, le fetch peut échouer : l'extraction a déjà
+    // eu lieu côté serveur, on enchaîne donc sur le poll de version dans tous les cas.
+    await fetch(SERVER + '/api/install-update', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ downloadUrl: info.downloadUrl, toVersion: info.latest })
+    }).catch(() => {});
     const ok = await pollVersion(info.latest, 40);
-    btn.disabled = false;
-    btn.classList.remove('has-update');
-    btn.textContent = '🔄 Vérifier les mises à jour';
-    pendingUpdate = null;
-    if (ok) showToast('✓ Mise à jour v' + info.latest + ' installée. Vos prochains audits utilisent la nouvelle version.', 'ok');
-    else showToast('La mise à jour a été lancée. Si l\'outil ne répond plus, relancez « Démarrer ».', 'warn');
-  }
-  shadow.querySelector('#checkUpdate').onclick = async () => {
-    const btn = shadow.querySelector('#checkUpdate');
-    // MAJ déjà détectée par l'auto-check → installation directe en un clic
-    if (pendingUpdate) { installFromPanel(pendingUpdate); return; }
-    const orig = btn.textContent;
-    btn.disabled = true; btn.textContent = '⏳ Vérification…';
-    const info = await fetchUpdateInfo();
-    btn.disabled = false; btn.textContent = orig;
-    if (!info) { showToast('⚠ Impossible de vérifier les mises à jour. Vérifiez que l\'outil est bien démarré (fenêtre « Démarrer »).', 'warn'); return; }
-    if (cmpVer(info.latest, info.local) > 0) installFromPanel(info);
-    else showToast('✓ Vous êtes à jour (v' + info.local + ').', 'ok');
-  };
-  // Auto-check discret au chargement : si une MAJ existe, le bouton devient « Installer »
-  fetchUpdateInfo().then(info => {
-    if (info && cmpVer(info.latest, info.local) > 0) {
-      pendingUpdate = info;
-      const btn = shadow.querySelector('#checkUpdate');
-      btn.classList.add('has-update');
-      btn.textContent = '🚀 Installer la mise à jour (v' + info.latest + ')';
+    if (ok) {
+      setBar('✓ Mise à jour v' + info.latest + ' installée. Vos prochains audits utilisent la nouvelle version.', true);
+      setTimeout(() => { updateBar.style.display = 'none'; }, 6000);
+    } else {
+      setBar('La mise à jour a été lancée. Si l\'outil ne répond plus, relancez « Démarrer ».', true);
     }
+  }
+  // Affiche la barre « Mise à jour disponible » avec le bouton Installer
+  function showUpdateBar(info) {
+    updateBar.innerHTML = '<span class="ub-msg">🚀 Mise à jour disponible : v' + info.latest + '</span>'
+      + '<button class="ub-install">Installer</button>'
+      + '<button class="ub-close" title="Masquer">×</button>';
+    updateBar.style.display = 'flex';
+    updateBar.querySelector('.ub-install').onclick = (e) => {
+      const b = e.currentTarget; b.disabled = true; b.textContent = '…';
+      installFromPanel(info);
+    };
+    updateBar.querySelector('.ub-close').onclick = () => { updateBar.style.display = 'none'; };
+  }
+  // Auto-check discret au chargement : si une MAJ existe, la barre apparaît en haut du volet
+  fetchUpdateInfo().then(info => {
+    if (info && cmpVer(info.latest, info.local) > 0) showUpdateBar(info);
   }).catch(() => {});
 
   // Relancer l'audit RAPIDE — approche D (mini pre-scan)
