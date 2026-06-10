@@ -777,7 +777,7 @@ textarea#html-input::placeholder { color: var(--text-faint); }
         <button class="btn-icon" onclick="exportCSV()">📊 CSV</button>
       </div>
       <button id="server-indicator" class="server-indicator unknown" onclick="openOnboarding()" title="État du serveur local — cliquez pour plus d'infos"><span class="server-dot"></span><span id="server-indicator-label">Serveur…</span></button>
-      <button id="btn-check-updates" class="btn-icon" onclick="manualCheckUpdate()" title="Ouvrir la page des releases GitHub pour vérifier les mises à jour">🔄 Vérifier MAJ</button>
+      <button id="btn-check-updates" class="btn-icon" onclick="manualCheckUpdate()" title="Vérifier maintenant si une mise à jour est disponible">🔄 Vérifier MAJ</button>
       <button class="btn-icon ai-btn" onclick="openSettings()" title="Paramètres : service IA (URL, clé, modèle)">⚙️ Paramètres</button>
     </div>
   </div>
@@ -2547,8 +2547,9 @@ function compareSemver(a,b){
   }
   return 0;
 }
+// Retourne 'update' (MAJ dispo), 'uptodate' (à jour) ou 'error' (check impossible).
 async function checkForUpdate(){
-  if(updateState.dismissed)return; // dismissed durant cette session
+  if(updateState.dismissed)return 'dismissed'; // dismissed durant cette session
   let data=null;
   try{
     // Préférence : proxy via start.py (fetch côté serveur, passe les proxys d'entreprise).
@@ -2565,18 +2566,20 @@ async function checkForUpdate(){
     }
   }catch(e){
     console.warn("[update] check failed:",e.message);
-    return;
+    return 'error';
   }
   // Normalise le format GitHub Releases → {version, changelog, downloadUrl}
   if(data&&data.tag_name)data={version:String(data.tag_name).replace(/^v/,""),changelog:data.body||"",downloadUrl:((data.assets||[]).find(a=>/\.zip$/i.test(a.name||""))||{}).browser_download_url||""};
-  if(!data||!data.version)return;
+  if(!data||!data.version)return 'error';
   if(compareSemver(data.version,APP_VERSION)>0){
     updateState.available=true;
     updateState.latest=data.version;
     updateState.changelog=data.changelog||"";
     updateState.downloadUrl=data.downloadUrl||"";
     renderUpdateBanner();
+    return 'update';
   }
+  return 'uptodate';
 }
 function renderUpdateBanner(){
   // Insère/update une bannière en haut du body
@@ -2671,10 +2674,30 @@ async function pollVersion(target,maxAttempts){
   return false;
 }
 
-// Bouton « 🔄 Vérifier MAJ » — relance le check et ouvre la page des releases GitHub.
-function manualCheckUpdate(){
-  updateState.dismissed=false;checkForUpdate();
-  window.open(UPDATE_PAGE,'_blank','noopener,noreferrer');
+// Petit toast en haut à droite (auto-disparition). kind: 'ok' | 'update' | 'warn'.
+function showToast(msg,kind){
+  const col=kind==='ok'?'#1B873F':kind==='update'?'#3B7CEB':'#E8791D';
+  let t=document.getElementById('a11y-toast');
+  if(t)t.remove();
+  t=document.createElement('div');t.id='a11y-toast';
+  t.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#fff;color:#1F1E1B;border-left:4px solid '+col+';box-shadow:0 6px 24px rgba(0,0,0,.18);border-radius:8px;padding:12px 16px;font-size:13.5px;line-height:1.5;max-width:360px;font-family:var(--sans);animation:fade-up .2s';
+  t.textContent=msg;
+  document.body.appendChild(t);
+  setTimeout(()=>{if(t)t.style.transition='opacity .4s';if(t)t.style.opacity='0';},4200);
+  setTimeout(()=>{if(t)t.remove();},4700);
+}
+
+// Bouton « 🔄 Vérifier MAJ » — relance le check et affiche le résultat (à jour / MAJ dispo / échec).
+async function manualCheckUpdate(){
+  const btn=document.getElementById('btn-check-updates');
+  const orig=btn?btn.innerHTML:'';
+  if(btn){btn.disabled=true;btn.innerHTML='⏳ Vérification…';}
+  updateState.dismissed=false;
+  const res=await checkForUpdate();
+  if(btn){btn.disabled=false;btn.innerHTML=orig;}
+  if(res==='update')showToast('🚀 Mise à jour disponible : v'+updateState.latest+' — voir la bannière en haut de la page pour l\'installer.','update');
+  else if(res==='uptodate')showToast('✓ Vous êtes à jour (v'+APP_VERSION+').','ok');
+  else showToast('⚠ Impossible de vérifier les mises à jour pour le moment (réseau, ou limite GitHub atteinte). Réessayez dans quelques minutes.','warn');
 }
 
 // Lance le check au démarrage (après le DOM ready) + ajuste la visibilité du bouton « Vérifier MAJ »
